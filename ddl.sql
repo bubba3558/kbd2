@@ -34,26 +34,22 @@ END;
 CREATE OR REPLACE TRIGGER ENOUGH_PRODUCTS_FOR_ORDER_TRI
 --  check if there is enough products in warehouse to prepare the inserted ordeer
 --  if not lack_of_prodacts_in_warehouse exception is raised
-  AFTER INSERT ON ORDERS 
+  AFTER INSERT ON ORDER_CONTENTS 
   FOR EACH ROW 
-DECLARE 
-  weight_after_update NUMBER(4);
+DECLARE
   weight_of_product_to_remove PRODUCTS_IN_WAREHOUSE.WEIGHT%TYPE;
-  lack_of_prodacts_in_warehouse EXCEPTION;
-  PRAGMA EXCEPTION_INIT(lack_of_prodacts_in_warehouse, -20001);
+  lack_of_products_in_warehouse EXCEPTION;
+  PRAGMA EXCEPTION_INIT(lack_of_products_in_warehouse, -20001);
 BEGIN   
-  FOR product_used_in_order IN 
-    (SELECT T1.PRODUCT_TYPE_ID AS PRODUCT_USED_IN_ORDER_ID, SUM(T1.WEIGHT) AS WEIGHT_USED_IN_ORDER
-        FROM INGREDIENTS T1
-        RIGHT JOIN ORDER_CONTENTS T2
-          ON T1.PIZZA_TYPE_ID = T2.PIZZA_TYPE_ID 
-        WHERE T2.ORDER_ID = :new.order_id
-        GROUP BY T1.PRODUCT_TYPE_ID)
+  FOR product_used_in_pizza IN 
+    (SELECT PRODUCT_TYPE_ID, WEIGHT
+        FROM INGREDIENTS 
+        WHERE  PIZZA_TYPE_ID = :NEW.PIZZA_TYPE_ID)
     LOOP
-      weight_of_product_to_remove := product_used_in_order.WEIGHT_USED_IN_ORDER;
+      weight_of_product_to_remove := product_used_in_pizza.weight;
       FOR product_in_warehouse IN ( 
         SELECT * FROM PRODUCTS_IN_WAREHOUSE p
-        WHERE p.PRODUCT_TYPE_ID = product_used_in_order.PRODUCT_USED_IN_ORDER_ID
+        WHERE p.PRODUCT_TYPE_ID = product_used_in_pizza.PRODUCT_TYPE_ID
         ORDER BY p.DELIVERY_DATE ASC
         )
       LOOP 
@@ -61,10 +57,11 @@ BEGIN
           UPDATE PRODUCTS_IN_WAREHOUSE
             SET WEIGHT = WEIGHT - weight_of_product_to_remove
             WHERE PRODUCT_TYPE_ID = product_in_warehouse.product_type_id AND DELIVERY_DATE =  product_in_warehouse.delivery_date;
+            weight_of_product_to_remove :=0;
           EXIT;
         END IF;
         
-        weight_of_product_to_remove := weight_of_product_to_remove - product_in_warehouse.WEIGHT;
+        weight_of_product_to_remove := weight_of_product_to_remove - product_in_warehouse.weight;
         UPDATE PRODUCTS_IN_WAREHOUSE
           SET WEIGHT = 0
             WHERE PRODUCT_TYPE_ID = product_in_warehouse.product_type_id AND DELIVERY_DATE =  product_in_warehouse.delivery_date;
@@ -127,4 +124,5 @@ CREATE MATERIALIZED VIEW LAST_MONTH_PROFIT_PER_PIZZA AS
       ON PIZZ.PIZZA_TYPE_ID = PCOS.PIZZA_TYPE_ID
     WHERE ORD.CREATION_DATE > TRUNC(ADD_MONTHS(SYSDATE,-1), 'MONTH') AND ORD.CREATION_DATE < TRUNC(SYSDATE, 'MONTH')
     GROUP BY PIZZ.PIZZA_TYPE_ID;
+/    
     
