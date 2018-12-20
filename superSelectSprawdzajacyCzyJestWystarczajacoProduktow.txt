@@ -1,0 +1,21 @@
+DECLARE 
+  missing_products_number NUMBER(4);
+  lack_of_prodacts_in_warehouse EXCEPTION;
+BEGIN 
+  SELECT COUNT(*) 
+    INTO missing_products_number
+    FROM (
+      SELECT SUM(T1.WEIGHT) AS WEIGHT_SUM, T2.PRODUCT_TYPE_ID
+        FROM PRODUCTS_IN_WAREHOUSE T1
+          RIGHT JOIN INGREDIENTS T2
+            ON T1.PRODUCT_TYPE_ID = T2.PRODUCT_TYPE_ID 
+          RIGHT JOIN ORDER_CONTENTS T3
+           ON T2.PIZZA_TYPE_ID = T3.PIZZA_TYPE_ID 
+          WHERE T3.ORDER_ID = :NEW.ORDER_ID
+          GROUP BY T2.PRODUCT_TYPE_ID,T2.WEIGHT 
+          HAVING (SUM(T1.WEIGHT)<T2.WEIGHT  OR SUM(T1.WEIGHT) IS NULL)
+      );
+  IF missing_products_number > 0 THEN
+      RAISE lack_of_prodacts_in_warehouse;
+  END IF;
+end;
