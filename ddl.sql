@@ -32,8 +32,8 @@ END;
 /
 
 CREATE OR REPLACE TRIGGER ENOUGH_PRODUCTS_FOR_ORDER_TRI
---  check if there is enough products in warehouse to prepare the inserted ordeer
---  if not lack_of_prodacts_in_warehouse exception is raised
+--  check if there is enough products in warehouse to prepare the inserted order
+--  if not lack_of_products_in_warehouse exception is raised
   AFTER INSERT ON ORDER_CONTENTS 
   FOR EACH ROW 
 DECLARE
@@ -57,11 +57,18 @@ BEGIN
           UPDATE PRODUCTS_IN_WAREHOUSE
             SET WEIGHT = WEIGHT - weight_of_product_to_remove
             WHERE PRODUCT_TYPE_ID = product_in_warehouse.product_type_id AND DELIVERY_DATE =  product_in_warehouse.delivery_date;
+      
+          INSERT INTO PRODUCTS_USED_IN_ORDER(ORDER_ID, PRODUCT_TYPE_ID, DELIVERY_DATE, WEIGHT_USED_IN_ORDER, PIZZA_TYPE_ID) 
+            VALUES (NEW.ORDER_ID, product_in_warehouse.product_type_id, product_in_warehouse.product_type_id.delivery_date, 
+                    weight_of_product_to_remove, NEW.PIZZA_TYPE_ID);
             weight_of_product_to_remove :=0;
           EXIT;
         END IF;
         
         weight_of_product_to_remove := weight_of_product_to_remove - product_in_warehouse.weight;
+        INSERT INTO PRODUCTS_USED_IN_ORDER(ORDER_ID, PRODUCT_TYPE_ID, DELIVERY_DATE, WEIGHT_USED_IN_ORDER, PIZZA_TYPE_ID) 
+            VALUES (NEW.ORDER_ID, product_in_warehouse.product_type_id, product_in_warehouse.product_type_id.delivery_date, 
+                    product_in_warehouse.weight, NEW.PIZZA_TYPE_ID);
         UPDATE PRODUCTS_IN_WAREHOUSE
           SET WEIGHT = 0
             WHERE PRODUCT_TYPE_ID = product_in_warehouse.product_type_id AND DELIVERY_DATE =  product_in_warehouse.delivery_date;
@@ -101,28 +108,20 @@ CREATE OR REPLACE VIEW ORDERS_QUEUE AS
         
 CREATE MATERIALIZED VIEW LAST_MONTH_PROFIT_PER_PIZZA AS 
 --  view present profit and cost for each pizza type
-  WITH PIZZAS_COSTS AS (
-    SELECT PIZZ.PIZZA_TYPE_ID, SUM(PROD_PRICES.MAX_PRODUCT_PRICE*INGR.WEIGHT) AS PIZZA_COST
-      FROM PIZZA_TYPES PIZZ
-      LEFT JOIN INGREDIENTS INGR 
-        ON PIZZ.PIZZA_TYPE_ID = INGR.PIZZA_TYPE_ID
-      LEFT JOIN (
-        SELECT PROD.PRODUCT_TYPE_ID, MAX(PROD.PRICE) AS MAX_PRODUCT_PRICE
-          FROM PRODUCTS_IN_WAREHOUSE PROD
-          GROUP BY PROD.PRODUCT_TYPE_ID
-          ) PROD_PRICES
-        ON INGR.PRODUCT_TYPE_ID = PROD_PRICES.PRODUCT_TYPE_ID
-      GROUP BY PIZZ.PIZZA_TYPE_ID
-  )
-  SELECT PIZZ.PIZZA_TYPE_ID, SUM(PIZZ.PRICE) AS INCOME, SUM(PCOS.PIZZA_COST) as EXPENSES, SUM(PIZZ.PRICE) - SUM(PCOS.PIZZA_COST) AS PROFIT
-    FROM ORDERS ORD
-    LEFT JOIN ORDER_CONTENTS OCON
-      ON ORD.ORDER_ID = OCON.ORDER_ID
-    LEFT JOIN PIZZA_TYPES PIZZ
-      ON OCON.PIZZA_TYPE_ID = PIZZ.PIZZA_TYPE_ID
-    LEFT JOIN PIZZAS_COSTS PCOS
-      ON PIZZ.PIZZA_TYPE_ID = PCOS.PIZZA_TYPE_ID
-    WHERE ORD.CREATION_DATE > TRUNC(ADD_MONTHS(SYSDATE,-1), 'MONTH') AND ORD.CREATION_DATE < TRUNC(SYSDATE, 'MONTH')
-    GROUP BY PIZZ.PIZZA_TYPE_ID;
+  SELECT PIZZA_TYPE_ID, SUM(PIZZA_PRICE_DURING_ORDER) AS INCOME, SUM(ONE_PIZZA_EXPENSES) as EXPENSES, 
+        SUM(PIZZA_PRICE_DURING_ORDER) - SUM(ONE_PIZZA_EXPENSES) AS PROFIT 
+        FROM
+          (SELECT OCON.PIZZA_TYPE_ID, OCON.PIZZA_PRICE_DURING_ORDER,
+            SUM(PUSED.USED_WEIGHT* PWARE.PRICE) AS ONE_PIZZA_EXPENSES
+              FROM ORDERS ORD
+              LEFT JOIN ORDER_CONTENTS OCON
+                ON ORD.ORDER_ID = OCON.ORDER_ID
+              LEFT JOIN PRODUCTS_USED_IN_ORDER PUSED
+                ON OCON.ORDER_ID = PUSED.ORDER_ID AND OCON.PIZZA_TYPE_ID = PUSED.PIZZA_TYPE_ID
+              LEFT JOIN PRODUCTS_IN_WAREHOUSE PWARE
+                ON PUSED.PRODUCT_TYPE_ID = PWARE.PRODUCT_TYPE_ID AND PUSED.DELIVERY_DATE = PWARE.DELIVERY_DATE
+              WHERE ORD.CREATION_DATE > TRUNC(ADD_MONTHS(SYSDATE,-1), 'MONTH') AND ORD.CREATION_DATE < TRUNC(SYSDATE, 'MONTH')
+              GROUP BY OCON.ORDER_ID, OCON.PIZZA_TYPE_ID, OCON.PIZZA_PRICE_DURING_ORDER)  
+      GROUP BY PIZZA_TYPE_ID;
 /    
     
