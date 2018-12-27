@@ -30,7 +30,16 @@ BEGIN
   FROM dual;
 END;
 /
-
+CREATE OR REPLACE TRIGGER SET_ACTUAL_SALE_PRICE_TRI
+  BEFORE INSERT ON ORDER_CONTENTS
+  FOR EACH ROW
+BEGIN
+    SELECT PRICE
+      INTO :NEW.ACTUAL_SALE_PRICE
+      FROM PIZZA_TYPES p
+      WHERE p.PIZZA_TYPE_ID = :NEW.PIZZA_TYPE_ID;
+END;
+/
 CREATE OR REPLACE TRIGGER ENOUGH_PRODUCTS_FOR_ORDER_TRI
 --  check if there is enough products in warehouse to prepare the inserted order
 --  if not lack_of_products_in_warehouse exception is raised
@@ -46,32 +55,32 @@ BEGIN
         FROM INGREDIENTS 
         WHERE  PIZZA_TYPE_ID = :NEW.PIZZA_TYPE_ID)
     LOOP
-      weight_of_product_to_remove := product_used_in_pizza.weight;
+      weight_of_product_to_remove := product_used_in_pizza.weight * :NEW.QUANTITY;
       FOR product_in_warehouse IN ( 
         SELECT * FROM PRODUCTS_IN_WAREHOUSE p
-        WHERE p.PRODUCT_TYPE_ID = product_used_in_pizza.PRODUCT_TYPE_ID
+        WHERE p.PRODUCT_TYPE_ID = product_used_in_pizza.product_type_id
         ORDER BY p.DELIVERY_DATE ASC
         )
       LOOP 
         IF product_in_warehouse.weight >= weight_of_product_to_remove THEN
+          INSERT INTO PRODUCTS_USED_IN_ORDER(ORDER_ID, PRODUCT_TYPE_ID, DELIVERY_DATE, USED_WEIGHT, PIZZA_TYPE_ID) 
+            VALUES (:NEW.ORDER_ID, product_in_warehouse.product_type_id, product_in_warehouse.delivery_date, 
+                    weight_of_product_to_remove, :NEW.PIZZA_TYPE_ID);
           UPDATE PRODUCTS_IN_WAREHOUSE
             SET WEIGHT = WEIGHT - weight_of_product_to_remove
-            WHERE PRODUCT_TYPE_ID = product_in_warehouse.product_type_id AND DELIVERY_DATE =  product_in_warehouse.delivery_date;
-      
-          INSERT INTO PRODUCTS_USED_IN_ORDER(ORDER_ID, PRODUCT_TYPE_ID, DELIVERY_DATE, WEIGHT_USED_IN_ORDER, PIZZA_TYPE_ID) 
-            VALUES (NEW.ORDER_ID, product_in_warehouse.product_type_id, product_in_warehouse.product_type_id.delivery_date, 
-                    weight_of_product_to_remove, NEW.PIZZA_TYPE_ID);
-            weight_of_product_to_remove :=0;
+            WHERE PRODUCT_TYPE_ID = product_in_warehouse.product_type_id AND DELIVERY_DATE =  product_in_warehouse.delivery_date;   
+          weight_of_product_to_remove :=0;
           EXIT;
         END IF;
         
         weight_of_product_to_remove := weight_of_product_to_remove - product_in_warehouse.weight;
-        INSERT INTO PRODUCTS_USED_IN_ORDER(ORDER_ID, PRODUCT_TYPE_ID, DELIVERY_DATE, WEIGHT_USED_IN_ORDER, PIZZA_TYPE_ID) 
-            VALUES (NEW.ORDER_ID, product_in_warehouse.product_type_id, product_in_warehouse.product_type_id.delivery_date, 
-                    product_in_warehouse.weight, NEW.PIZZA_TYPE_ID);
+        INSERT INTO PRODUCTS_USED_IN_ORDER(ORDER_ID, PRODUCT_TYPE_ID, DELIVERY_DATE, USED_WEIGHT, PIZZA_TYPE_ID) 
+            VALUES (:NEW.ORDER_ID, product_in_warehouse.product_type_id, product_in_warehouse.delivery_date, 
+                    product_in_warehouse.weight, :NEW.PIZZA_TYPE_ID);
         UPDATE PRODUCTS_IN_WAREHOUSE
           SET WEIGHT = 0
             WHERE PRODUCT_TYPE_ID = product_in_warehouse.product_type_id AND DELIVERY_DATE =  product_in_warehouse.delivery_date;
+            
       END LOOP product_in_warehouse;
       IF weight_of_product_to_remove > 0 THEN
         raise_application_error( -20001, 'There are at least one missing product to procced the order');
@@ -80,7 +89,7 @@ BEGIN
 END;
 /
 
-CREATE VIEW PRODUCTS_IN_WAREHOUSE_SUMARY AS 
+CREATE VIEW PRODUCTS_IN_WAREHOUSE_SUMMARY AS 
 --  View which agregates the state of warehouse 
 --  Same product type may come from different deliveries (many rows in table). View sums product intances from all deliveries.
   SELECT T1.PRODUCT_TYPE_ID, T1.NAME, SUM(T2.WEIGHT) AS WEIGHT_SUM
@@ -97,7 +106,7 @@ CREATE OR REPLACE VIEW MENU AS
   ORDER BY NAME ASC, PIZZA_SIZE ASC;
         
 CREATE OR REPLACE VIEW ORDERS_QUEUE AS 
---  Orders which are not complated yet
+--  Orders which are not completed yet
   SELECT T1.ORDER_ID, T1.CREATION_DATE, T3.PIZZA_TYPE_ID, T3.NAME, T3.PIZZA_SIZE
     FROM ORDERS T1
     LEFT JOIN ORDER_CONTENTS T2
@@ -105,14 +114,15 @@ CREATE OR REPLACE VIEW ORDERS_QUEUE AS
     LEFT JOIN PIZZA_TYPES T3
       ON T2.PIZZA_TYPE_ID = T3.PIZZA_TYPE_ID
     WHERE T1.COMPLETED = 'N';
-        
+/
+DROP MATERIALIZED VIEW LAST_MONTH_PROFIT_PER_PIZZA;
 CREATE MATERIALIZED VIEW LAST_MONTH_PROFIT_PER_PIZZA AS 
---  view present profit and cost for each pizza type
-  SELECT PIZZA_TYPE_ID, SUM(PIZZA_PRICE_DURING_ORDER) AS INCOME, SUM(ONE_PIZZA_EXPENSES) as EXPENSES, 
-        SUM(PIZZA_PRICE_DURING_ORDER) - SUM(ONE_PIZZA_EXPENSES) AS PROFIT 
+--  view present last month profit and cost for each pizza type
+  SELECT PIZZA_TYPE_ID,SUM(QUANTITY) AS NUMBER_OF_SOLD,  SUM(ACTUAL_SALE_PRICE * QUANTITY) AS INCOME, SUM(PIZZAS_EXPENSES) as EXPENSES, 
+        SUM(ACTUAL_SALE_PRICE * QUANTITY)  - SUM(PIZZAS_EXPENSES) AS PROFIT
         FROM
-          (SELECT OCON.PIZZA_TYPE_ID, OCON.PIZZA_PRICE_DURING_ORDER,
-            SUM(PUSED.USED_WEIGHT* PWARE.PRICE) AS ONE_PIZZA_EXPENSES
+            (SELECT OCON.PIZZA_TYPE_ID, OCON.ACTUAL_SALE_PRICE, OCON.QUANTITY,
+            SUM(PUSED.USED_WEIGHT* PWARE.PRICE) AS PIZZAS_EXPENSES
               FROM ORDERS ORD
               LEFT JOIN ORDER_CONTENTS OCON
                 ON ORD.ORDER_ID = OCON.ORDER_ID
@@ -121,7 +131,7 @@ CREATE MATERIALIZED VIEW LAST_MONTH_PROFIT_PER_PIZZA AS
               LEFT JOIN PRODUCTS_IN_WAREHOUSE PWARE
                 ON PUSED.PRODUCT_TYPE_ID = PWARE.PRODUCT_TYPE_ID AND PUSED.DELIVERY_DATE = PWARE.DELIVERY_DATE
               WHERE ORD.CREATION_DATE > TRUNC(ADD_MONTHS(SYSDATE,-1), 'MONTH') AND ORD.CREATION_DATE < TRUNC(SYSDATE, 'MONTH')
-              GROUP BY OCON.ORDER_ID, OCON.PIZZA_TYPE_ID, OCON.PIZZA_PRICE_DURING_ORDER)  
-      GROUP BY PIZZA_TYPE_ID;
+              GROUP BY OCON.ORDER_ID, OCON.PIZZA_TYPE_ID, OCON.ACTUAL_SALE_PRICE, OCON.QUANTITY)  
+      GROUP BY PIZZA_TYPE_ID; 
 /    
     
