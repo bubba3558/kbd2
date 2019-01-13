@@ -1,0 +1,9 @@
+select
+  XMLElement("pizza",
+    XMLAttributes(pizza_type_id as "id"),
+    XMLElement("name", name),
+    XMLElement("size", pizza_size),
+    XMLElement("price", price)
+  ).getClobVal() 
+  from pizza_types
+    where was_withdrawn = 'N';

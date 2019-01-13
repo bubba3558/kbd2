@@ -135,3 +135,83 @@ CREATE MATERIALIZED VIEW LAST_MONTH_PROFIT_PER_PIZZA AS
       GROUP BY PIZZA_TYPE_ID; 
 /    
     
+CREATE OR REPLACE PROCEDURE print_menu IS
+--creates www report whith pizzeria's menu
+  CURSOR pizza_cursor IS
+    SELECT *
+      FROM menu;
+BEGIN
+--  display table
+  htp.htmlopen;
+  htp.headopen;
+  htp.title('Menu');
+  htp.headclose; 
+  htp.bodyopen;
+  htp.header(1, 'Pizzas');
+  htp.tableOpen(cattributes => 'border=2 width=50%' );
+  htp.tableRowOpen;
+  htp.tableData('Id');
+  htp.tableData('Name');
+  htp.tableData('Size');
+  htp.tableData('Price');
+  htp.tableRowClose;
+  FOR pizza IN pizza_cursor LOOP
+    htp.tableRowOpen;
+    htp.tableData(pizza.pizza_type_id);
+    htp.tableData(pizza.name);
+    htp.tableData(pizza.pizza_size);
+    htp.tableData(pizza.price);
+    htp.tableRowClose;
+  END LOOP;
+  htp.tableClose;
+  htp.bodyclose;
+  htp.htmlclose;
+END;
+/
+
+CREATE OR REPLACE PROCEDURE print_available_pizzas IS
+-- creates www report with pizzas for which there is enough product in warehouse
+  CURSOR pizza_cursor IS
+-- choose pizzas which can be prepared - there is enough product in warehouse to prepare them
+SELECT pizza_type_id, name, pizza_size, price 
+  FROM(
+    SELECT p.pizza_type_id, p.name, p.pizza_size, p.price
+      FROM MENU p
+      LEFT JOIN ingredients i
+        ON i.pizza_type_id = p.pizza_type_id
+--        PRODUCTS IN WAREHOUSE CONTAINS AGREGATED WEIGHT FOR EACH PRODUCT TYPE
+      LEFT JOIN PRODUCTS_IN_WAREHOUSE_SUMMARY w
+        ON i.product_type_id = w.product_type_id
+      GROUP BY p.pizza_type_id, p.name, p.pizza_size, p.price, i.product_type_id, i.weight, w.PRODUCT_TYPE_ID, w.weight_sum
+         HAVING (i.weight<w.weight_sum)
+         ) 
+  GROUP by pizza_type_id, name, pizza_size, price
+  ORDER BY pizza_type_id;
+BEGIN
+--  display table
+  htp.htmlopen;
+  htp.headopen;
+  htp.title('Available pizzas');
+  htp.headclose; 
+  htp.bodyopen;
+  htp.header(1, 'Available pizzas');
+  htp.tableOpen(cattributes => 'border=2 width=50%' );
+  htp.tableRowOpen;
+  htp.tableData('Id');
+  htp.tableData('Name');
+  htp.tableData('Size');
+  htp.tableData('Price');
+  htp.tableRowClose;
+  FOR pizza IN pizza_cursor LOOP
+    htp.tableRowOpen;
+    htp.tableData(pizza.pizza_type_id);
+    htp.tableData(pizza.name);
+    htp.tableData(pizza.pizza_size);
+    htp.tableData(pizza.price);
+    htp.tableRowClose;
+  END LOOP;
+  htp.tableClose;
+  htp.bodyclose;
+  htp.htmlclose;
+END;
+
