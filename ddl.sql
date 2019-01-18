@@ -31,6 +31,7 @@ BEGIN
 END;
 /
 CREATE OR REPLACE TRIGGER SET_ACTUAL_SALE_PRICE_TRI
+--  Trigger used to set pizza price in ORDER_CONTENTS. The ACTUAL_SALE_PRICE is used for pizzaria's profit calculation.
   BEFORE INSERT ON ORDER_CONTENTS
   FOR EACH ROW
 BEGIN
@@ -41,8 +42,8 @@ BEGIN
 END;
 /
 CREATE OR REPLACE TRIGGER ENOUGH_PRODUCTS_FOR_ORDER_TRI
---  check if there is enough products in warehouse to prepare the inserted order
---  if not lack_of_products_in_warehouse exception is raised
+--  Check if there is enough products in warehouse to prepare the inserted order
+--  If not lack_of_products_in_warehouse exception is raised
   AFTER INSERT ON ORDER_CONTENTS 
   FOR EACH ROW 
 DECLARE
@@ -51,11 +52,14 @@ DECLARE
   PRAGMA EXCEPTION_INIT(lack_of_products_in_warehouse, -20001);
 BEGIN   
   FOR product_used_in_pizza IN 
+--  Get product types and their wight which are used to prepere ordered pizza 
     (SELECT PRODUCT_TYPE_ID, WEIGHT
         FROM INGREDIENTS 
         WHERE  PIZZA_TYPE_ID = :NEW.PIZZA_TYPE_ID)
     LOOP
+--    Remove used products weight from warehouse and insert into PRODUCTS_USED_IN_ORDER information how much weight and from which delivery were used
       weight_of_product_to_remove := product_used_in_pizza.weight * :NEW.QUANTITY;
+--      Get all records which contains current analysed product type and sort them by date - the oldest delivery is first
       FOR product_in_warehouse IN ( 
         SELECT * FROM PRODUCTS_IN_WAREHOUSE p
         WHERE p.PRODUCT_TYPE_ID = product_used_in_pizza.product_type_id
@@ -70,9 +74,10 @@ BEGIN
             SET WEIGHT = WEIGHT - weight_of_product_to_remove
             WHERE PRODUCT_TYPE_ID = product_in_warehouse.product_type_id AND DELIVERY_DATE =  product_in_warehouse.delivery_date;   
           weight_of_product_to_remove :=0;
+--         All necessary weight was removed from warehouse. Exit inner loop and go to the next product type
           EXIT;
         END IF;
-        
+--        Current analysed record does not contain enough weigh of product. Use all available weight and go to the next product delivery record
         weight_of_product_to_remove := weight_of_product_to_remove - product_in_warehouse.weight;
         INSERT INTO PRODUCTS_USED_IN_ORDER(ORDER_ID, PRODUCT_TYPE_ID, DELIVERY_DATE, USED_WEIGHT, PIZZA_TYPE_ID) 
             VALUES (:NEW.ORDER_ID, product_in_warehouse.product_type_id, product_in_warehouse.delivery_date, 
@@ -82,6 +87,7 @@ BEGIN
             WHERE PRODUCT_TYPE_ID = product_in_warehouse.product_type_id AND DELIVERY_DATE =  product_in_warehouse.delivery_date;
             
       END LOOP product_in_warehouse;
+--    Loop went through all warehouse records with the current analysed product type. If weight_of_product_to_remove is bigger than zero, there is not enough product in warehouse to complete the order
       IF weight_of_product_to_remove > 0 THEN
         raise_application_error( -20001, 'There are at least one missing product to procced the order');
         END IF;         
@@ -89,25 +95,25 @@ BEGIN
 END;
 /
 
-CREATE VIEW PRODUCTS_IN_WAREHOUSE_SUMMARY AS 
+CREATE OR REPLACE VIEW PRODUCTS_IN_WAREHOUSE_SUMMARY AS 
+  SELECT T1.PRODUCT_TYPE_ID, T1.NAME, SUM(T2.WEIGHT) AS WEIGHT_SUM
 --  View which agregates the state of warehouse 
 --  Same product type may come from different deliveries (many rows in table). View sums product intances from all deliveries.
-  SELECT T1.PRODUCT_TYPE_ID, T1.NAME, SUM(T2.WEIGHT) AS WEIGHT_SUM
     FROM PRODUCT_TYPES T1
     LEFT JOIN PRODUCTS_IN_WAREHOUSE T2
       ON T1.PRODUCT_TYPE_ID = T2.PRODUCT_TYPE_ID 
     GROUP BY T1.PRODUCT_TYPE_ID, T1.NAME;
          
 CREATE OR REPLACE VIEW MENU AS 
---  Presents list of pizza on sale (not withdrawn) in alphabethic order
   SELECT PIZZA_TYPE_ID, NAME, PIZZA_SIZE, PRICE
+--  Presents list of pizza on sale (not withdrawn) in alphabethic order
     FROM PIZZA_TYPES
   WHERE WAS_WITHDRAWN = 'N'
   ORDER BY NAME ASC, PIZZA_SIZE ASC;
         
 CREATE OR REPLACE VIEW ORDERS_QUEUE AS 
---  Orders which are not completed yet
   SELECT T1.ORDER_ID, T1.CREATION_DATE, T3.PIZZA_TYPE_ID, T3.NAME, T3.PIZZA_SIZE
+/*  Orders which are not completed yet */
     FROM ORDERS T1
     LEFT JOIN ORDER_CONTENTS T2
       ON T1.ORDER_ID = T2.ORDER_ID
@@ -117,9 +123,9 @@ CREATE OR REPLACE VIEW ORDERS_QUEUE AS
 /
 DROP MATERIALIZED VIEW LAST_MONTH_PROFIT_PER_PIZZA;
 CREATE MATERIALIZED VIEW LAST_MONTH_PROFIT_PER_PIZZA AS 
---  view present last month profit and cost for each pizza type
-  SELECT PIZZA_TYPE_ID,SUM(QUANTITY) AS NUMBER_OF_SOLD,  SUM(ACTUAL_SALE_PRICE * QUANTITY) AS INCOME, SUM(PIZZAS_EXPENSES) as EXPENSES, 
-        SUM(ACTUAL_SALE_PRICE * QUANTITY)  - SUM(PIZZAS_EXPENSES) AS PROFIT
+  SELECT PIZZA_TYPE_ID, SUM(QUANTITY) AS NUMBER_OF_SOLD, SUM(ACTUAL_SALE_PRICE * QUANTITY) AS INCOME, SUM(PIZZAS_EXPENSES) as EXPENSES, 
+/*  view present last month profit and cost for each pizza type */
+        SUM(ACTUAL_SALE_PRICE * QUANTITY) - SUM(PIZZAS_EXPENSES) AS PROFIT
         FROM
             (SELECT OCON.PIZZA_TYPE_ID, OCON.ACTUAL_SALE_PRICE, OCON.QUANTITY,
             SUM(PUSED.USED_WEIGHT* PWARE.PRICE) AS PIZZAS_EXPENSES
@@ -130,18 +136,21 @@ CREATE MATERIALIZED VIEW LAST_MONTH_PROFIT_PER_PIZZA AS
                 ON OCON.ORDER_ID = PUSED.ORDER_ID AND OCON.PIZZA_TYPE_ID = PUSED.PIZZA_TYPE_ID
               LEFT JOIN PRODUCTS_IN_WAREHOUSE PWARE
                 ON PUSED.PRODUCT_TYPE_ID = PWARE.PRODUCT_TYPE_ID AND PUSED.DELIVERY_DATE = PWARE.DELIVERY_DATE
-              WHERE ORD.CREATION_DATE > TRUNC(ADD_MONTHS(SYSDATE,-1), 'MONTH') AND ORD.CREATION_DATE < TRUNC(SYSDATE, 'MONTH')
+--               Ignore empty orders
+              WHERE OCON.PIZZA_TYPE_ID IS NOT NULL
+                AND ORD.CREATION_DATE > TRUNC(ADD_MONTHS(SYSDATE,-1), 'MONTH') 
+                AND ORD.CREATION_DATE < TRUNC(SYSDATE, 'MONTH')
               GROUP BY OCON.ORDER_ID, OCON.PIZZA_TYPE_ID, OCON.ACTUAL_SALE_PRICE, OCON.QUANTITY)  
       GROUP BY PIZZA_TYPE_ID; 
 /    
     
 CREATE OR REPLACE PROCEDURE print_menu IS
---creates www report whith pizzeria's menu
+--Create www report whith pizzeria's menu
   CURSOR pizza_cursor IS
     SELECT *
       FROM menu;
 BEGIN
---  display table
+--  Display table
   htp.htmlopen;
   htp.headopen;
   htp.title('Menu');
@@ -170,16 +179,16 @@ END;
 /
 
 CREATE OR REPLACE PROCEDURE print_available_pizzas IS
--- creates www report with pizzas for which there is enough product in warehouse
+-- Create www report with pizzas for which there is enough product in warehouse
   CURSOR pizza_cursor IS
--- choose pizzas which can be prepared - there is enough product in warehouse to prepare them
+-- Choose pizzas which can be prepared - there is enough product in warehouse to prepare them
 SELECT pizza_type_id, name, pizza_size, price 
   FROM(
     SELECT p.pizza_type_id, p.name, p.pizza_size, p.price
       FROM MENU p
       LEFT JOIN ingredients i
         ON i.pizza_type_id = p.pizza_type_id
---        PRODUCTS IN WAREHOUSE CONTAINS AGREGATED WEIGHT FOR EACH PRODUCT TYPE
+--        PRODUCTS_IN_WAREHOUSE_SUMMARY contains agregated weigh for each product type
       LEFT JOIN PRODUCTS_IN_WAREHOUSE_SUMMARY w
         ON i.product_type_id = w.product_type_id
       GROUP BY p.pizza_type_id, p.name, p.pizza_size, p.price, i.product_type_id, i.weight, w.PRODUCT_TYPE_ID, w.weight_sum
@@ -188,7 +197,7 @@ SELECT pizza_type_id, name, pizza_size, price
   GROUP by pizza_type_id, name, pizza_size, price
   ORDER BY pizza_type_id;
 BEGIN
---  display table
+--  Display table
   htp.htmlopen;
   htp.headopen;
   htp.title('Available pizzas');
