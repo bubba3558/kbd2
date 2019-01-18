@@ -223,4 +223,10 @@ BEGIN
   htp.bodyclose;
   htp.htmlclose;
 END;
+/
 
+CREATE OR REPLACE PROCEDURE startwwy IS 
+  BEGIN
+  print_available_pizzas();
+  print_menu();
+END;
