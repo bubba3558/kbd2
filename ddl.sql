@@ -95,10 +95,11 @@ BEGIN
 END;
 /
 
+COMMENT ON TABLE PRODUCTS_IN_WAREHOUSE_SUMMARY IS 'Agregates the state of warehouse. The same product type may come from different deliveries (many rows in table). View sums product wight from all deliveries.';
 CREATE OR REPLACE VIEW PRODUCTS_IN_WAREHOUSE_SUMMARY AS 
   SELECT T1.PRODUCT_TYPE_ID, T1.NAME, SUM(T2.WEIGHT) AS WEIGHT_SUM
 --  View which agregates the state of warehouse 
---  Same product type may come from different deliveries (many rows in table). View sums product intances from all deliveries.
+--  The same product type may come from different deliveries (many rows in table). View sums weight intances from all deliveries.
     FROM PRODUCT_TYPES T1
     LEFT JOIN PRODUCTS_IN_WAREHOUSE T2
       ON T1.PRODUCT_TYPE_ID = T2.PRODUCT_TYPE_ID 
@@ -106,7 +107,7 @@ CREATE OR REPLACE VIEW PRODUCTS_IN_WAREHOUSE_SUMMARY AS
          
 CREATE OR REPLACE VIEW MENU AS 
   SELECT PIZZA_TYPE_ID, NAME, PIZZA_SIZE, PRICE
---  Presents list of pizza on sale (not withdrawn) in alphabethic order
+--  Presents list of pizza for sale (not withdrawn) in alphabethic order
     FROM PIZZA_TYPES
   WHERE WAS_WITHDRAWN = 'N'
   ORDER BY NAME ASC, PIZZA_SIZE ASC;
@@ -156,7 +157,7 @@ BEGIN
   htp.title('Menu');
   htp.headclose; 
   htp.bodyopen;
-  htp.header(1, 'Pizzas');
+  htp.header(1, 'Menu');
   htp.tableOpen(cattributes => 'border=2 width=50%' );
   htp.tableRowOpen;
   htp.tableData('Id');
@@ -179,25 +180,23 @@ END;
 /
 
 CREATE OR REPLACE PROCEDURE print_available_pizzas IS
--- Create www report with pizzas for which there is enough product in warehouse
+-- Create www report with pizzas which can be prepared - there is enough product in warehouse to prepare them
   CURSOR pizza_cursor IS
--- Choose pizzas which can be prepared - there is enough product in warehouse to prepare them
-SELECT pizza_type_id, name, pizza_size, price 
-  FROM(
-    SELECT p.pizza_type_id, p.name, p.pizza_size, p.price
+SELECT *
+  FROM MENU 
+  WHERE PIZZA_TYPE_ID NOT IN (
+    SELECT p.pizza_type_id
       FROM MENU p
       LEFT JOIN ingredients i
         ON i.pizza_type_id = p.pizza_type_id
 --        PRODUCTS_IN_WAREHOUSE_SUMMARY contains agregated weigh for each product type
       LEFT JOIN PRODUCTS_IN_WAREHOUSE_SUMMARY w
         ON i.product_type_id = w.product_type_id
-      GROUP BY p.pizza_type_id, p.name, p.pizza_size, p.price, i.product_type_id, i.weight, w.PRODUCT_TYPE_ID, w.weight_sum
-         HAVING (i.weight<w.weight_sum)
-         ) 
-  GROUP by pizza_type_id, name, pizza_size, price
-  ORDER BY pizza_type_id;
+      GROUP BY p.pizza_type_id, i.product_type_id, i.weight, w.weight_sum
+         HAVING (i.weight>w.weight_sum OR w.weight_sum IS NULL)
+  );
 BEGIN
---  Display table
+/*  Display table*/
   htp.htmlopen;
   htp.headopen;
   htp.title('Available pizzas');
@@ -225,8 +224,12 @@ BEGIN
 END;
 /
 
-CREATE OR REPLACE PROCEDURE startwwy IS 
+CREATE OR REPLACE PROCEDURE startWWW IS 
+/* run procedures which generates www reports with avaible pizzas and menu*/
   BEGIN
   print_available_pizzas();
   print_menu();
 END;
+/
+
+
